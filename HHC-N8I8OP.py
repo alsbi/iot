@@ -10,22 +10,36 @@ class Switch:
     def __init__(self, relay, index, state):
         self.__relay = relay
         self.__index = index
-        self.state = state
+        self.__state = state
 
-    def on(self, timer):
-        if not self.state:
-            logger.info(f'On switch {self.__index}')
-            self.__relay.command(f"on{self.__index}")
-            self.state = True
+    @property
+    def state(self):
+        return self.__state
 
-    def off(self, timer):
-        if self.state:
-            logger.info(f'Off switch {self.__index}')
-            self.__relay.command(f"off{self.__index}")
-            self.state = False
+    @state.setter
+    def state(self, value):
+        self.__state = value
+
+    @property
+    def power(self):
+        return self.state
+
+    @power.setter
+    def power(self, value):
+        logger.info(f'Set power: {value} for switch {self.__index}')
+        operation = 'on' if value else 'off'
+        command = f"{operation}{self.__index}"
+        self.__relay.execute(command)
+        self.state = value
+
+    def timer(self, timeout):
+        logger.info(f'Set power: True for switch {self.__index} timeout: {timeout}')
+        command = f"on{self.__index}:{timeout}"
+        self.__relay.execute(command)
+        self.state = True
 
     def __repr__(self):
-        return f'<Index {self.__index}, state {self.state}>'
+        return f'<Switch {self.__index}, power state {self.power}>'
 
 
 class Relay:
@@ -36,44 +50,46 @@ class Relay:
 
         self.s.connect((self.ip, self.port))
 
-        self.switch = {index: Switch(self, index, state) for index, state in self._get_state()}
+        status = self._parse_status(self.execute('read'))
+        self._switch = {index: Switch(self, index, state) for index, state in status}
 
-    def _get_state(self, data=None):
-        data = data or self.command('read')
-        for index, state in enumerate(reversed(data.split('relay')[1])):
-            yield index + 1, bool(int(state))
-
-    def _update_state(self, data=None):
-        for index, state in self._get_state(data=data):
-            self.switch[index].state = state
-
-    def command(self, c):
+    def execute(self, c):
+        time.sleep(0.1)
         c = str(c).encode()
         self.s.send(c)
         data = self.s.recv(8192)
-        time.sleep(0.3)
         return data.decode()
 
-    def on(self, index, timer=None):
-        return self.switch[index].on(timer)
+    def __getitem__(self, item):
+        return self._switch[item]
 
-    def off(self, index, timer=None):
-        return self.switch[index].off(timer)
+    @staticmethod
+    def _parse_status(data):
+        return [[index + 1, bool(int(state))] for index, state in
+                enumerate(reversed(data.split('relay')[1]))]
 
-    def on_all(self):
-        if any(not s.state for s in self.switch.values()):
-            logger.info(f'ON ALL switch')
-            switch = '1' * len(self.switch)
-            self._update_state(self.command(f'all{switch}'))
+    def _update_status(self, status):
+        for i, s in status:
+            self._switch[i].state = s
 
-    def off_all(self):
-        if any(s.state for s in self.switch.values()):
-            logger.info(f'OFF ALL switch')
-            switch = '0' * len(self.switch)
-            self._update_state(self.command(f'all{switch}'))
+    def status(self):
+        data = self.execute('read')
+        status = self._parse_status(data)
+        self._update_status(status)
+        return status
+
+    def state(self, state: bool, switch=None):
+        if not switch:
+            command = str(int(state)) * len(self._switch)
+            data = self.execute(f'all{command}')
+            status = self._parse_status(data)
+            self._update_status(status)
+
+        else:
+            self._switch[switch].power = state
 
     def __repr__(self):
-        return str([s for s in self.switch.values()])
+        return str([s for s in self._switch.values()])
 
     def __del__(self):
         self.s.close()
